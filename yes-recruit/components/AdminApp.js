@@ -1,0 +1,309 @@
+'use client';
+import { useCallback, useEffect, useState } from 'react';
+import { CATEGORIES, FIELD_KINDS } from '@/lib/ads';
+import Responses from './Responses';
+
+const H = { 'content-type': 'application/json', 'x-yes-recruit': '1' };
+async function api(url, body, method = 'POST') {
+  const r = await fetch(url, { method, headers: H, body: body ? JSON.stringify(body) : undefined });
+  const j = await r.json().catch(() => ({}));
+  if (r.status === 401) { location.href = '/admin/login'; throw new Error('로그인이 필요합니다.'); }
+  if (!r.ok) throw new Error(j.error || '처리하지 못했습니다.');
+  return j;
+}
+
+export default function AdminApp({ appUrl: envUrl }) {
+  const [tab, setTab] = useState('resp');
+  const [ads, setAds] = useState(null);
+  const [byAd, setByAd] = useState({});
+  const [flags, setFlags] = useState({ ai: false, mail: false });
+  const [toast, setToast] = useState('');
+  const [appUrl, setAppUrl] = useState(envUrl);
+  useEffect(() => { if (!envUrl) setAppUrl(location.origin); }, [envUrl]);
+
+  const say = useCallback((m) => { setToast(m); setTimeout(() => setToast(''), 2400); }, []);
+  const load = useCallback(async () => {
+    try {
+      const [a, r] = await Promise.all([fetch('/api/admin/ads').then((x) => x.json()), fetch('/api/admin/responses').then((x) => x.json())]);
+      if (a.error) throw new Error(a.error);
+      setAds(a.ads); setFlags({ ai: a.ai, mail: a.mail }); setByAd(r.responses || {});
+    } catch (e) { say(e.message); }
+  }, [say]);
+  useEffect(() => { load(); }, [load]);
+
+  async function patch(adId, id, p) {
+    setByAd((m) => ({ ...m, [adId]: (m[adId] || []).map((r) => (r.id === id ? { ...r, ...p } : r)) }));
+    try { await api('/api/admin/responses', { action: 'update', adId, id, ...p }); say('저장했습니다'); } catch (e) { say(e.message); load(); }
+  }
+  async function del(adId, id, name) {
+    if (!confirm(`${name}님의 신청을 삭제할까요? 되돌릴 수 없습니다.`)) return;
+    try { await api('/api/admin/responses', { action: 'delete', adId, id }); setByAd((m) => ({ ...m, [adId]: m[adId].filter((r) => r.id !== id) })); say('삭제했습니다'); } catch (e) { say(e.message); }
+  }
+  async function logout() { await fetch('/api/auth', { method: 'DELETE', headers: H }); location.href = '/admin/login'; }
+
+  const formAds = (ads || []).filter((a) => a.mode === 'form');
+  const newCount = formAds.reduce((n, a) => n + (byAd[a.id] || []).filter((r) => r.status === 'new').length, 0);
+
+  return (
+    <>
+      <div className="stripe" aria-hidden="true"><i /><i /><i /><i /></div>
+      <header className="adm-head">
+        <img src="/brand/yes-mark-ink.png" alt="YES" />
+        <b>모집·신청 관리</b>
+        <span className="grow" />
+        <a className="btn small" href="/" target="_blank">게시판 보기 ↗</a>
+        <button className="btn small ghost" onClick={logout}>로그아웃</button>
+      </header>
+      <main className="wrap" style={{ paddingBottom: 60 }}>
+        <div className="tabs" role="tablist">
+          <button role="tab" aria-selected={tab === 'resp'} onClick={() => setTab('resp')}>신청 현황{newCount > 0 && <span className="badge">{newCount}</span>}</button>
+          <button role="tab" aria-selected={tab === 'ads'} onClick={() => setTab('ads')}>광고 관리</button>
+          <button role="tab" aria-selected={tab === 'import'} onClick={() => setTab('import')}>주보에서 가져오기</button>
+        </div>
+        {!ads ? <p className="muted">불러오는 중…</p>
+          : tab === 'resp' ? <Responses ads={formAds} byAd={byAd} onPatch={patch} onDelete={del} csvHref={(ad) => '/api/admin/export' + (ad && ad !== 'all' ? '?ad=' + ad : '')} />
+          : tab === 'ads' ? <AdsTab ads={ads} reload={load} say={say} appUrl={appUrl} mail={flags.mail} />
+          : <ImportTab ai={flags.ai} existing={ads} reload={load} say={say} goAds={() => setTab('ads')} />}
+      </main>
+      {toast && <div className="toast" role="status">{toast}</div>}
+    </>
+  );
+}
+
+/* ================= 광고 관리 */
+const blankAd = () => ({ title: '', category: '교회 전체', summary: '', details: '', contact: '', mode: 'form', link: '', fields: [], askCommunity: true, deadline: '', visible: true, notify: '' });
+
+function AdsTab({ ads, reload, say, appUrl, mail }) {
+  const [edit, setEdit] = useState(null);
+  const [share, setShare] = useState(null);
+
+  async function act(body, ok) { try { await api('/api/admin/ads', body); if (ok) say(ok); await reload(); } catch (e) { say(e.message); } }
+  async function remove(a) {
+    const n = a.counts?.total || 0;
+    if (!confirm(`"${a.title}" 광고를 지울까요?${n ? `\n신청 ${n}건도 함께 지워집니다.` : ''}\n(잠시 내리려면 '숨기기'를 쓰세요)`)) return;
+    act({ action: 'delete', id: a.id, withResponses: true }, '지웠습니다');
+  }
+
+  return (
+    <>
+      <div className="editor" style={{ borderWidth: 1.5, borderColor: 'var(--line)', gridTemplateColumns: 'auto 1fr', alignItems: 'center' }}>
+        <img className="qr" src="/api/admin/qr" alt="모집 게시판 QR 코드" />
+        <div style={{ display: 'grid', gap: 8 }}>
+          <b>주보에 넣을 게시판 주소</b>
+          <p className="muted" style={{ fontSize: 14 }}>이 주소(또는 QR) 하나만 주보에 넣으면, 성도님들이 모든 모집을 보고 바로 신청하거나 각 부서 링크로 넘어갈 수 있어요.</p>
+          <CopyLine value={appUrl + '/'} say={say} />
+          <a className="link" style={{ fontSize: 14 }} href="/api/admin/qr?download=1">QR 내려받기 (SVG)</a>
+        </div>
+      </div>
+
+      <div className="toolbar">
+        <b>광고 {ads.length}개</b><span className="muted" style={{ fontSize: 14 }}>· 공개 {ads.filter((a) => a.visible).length}</span>
+        <span className="grow" />
+        <button className="btn small primary" onClick={() => setEdit(blankAd())}>+ 새 광고</button>
+      </div>
+      {edit && <Editor initial={edit} mail={mail} onClose={() => setEdit(null)} onSaved={async () => { setEdit(null); say('저장했습니다'); await reload(); }} />}
+
+      <div className="adlist">
+        {ads.map((a, i) => (
+          <div key={a.id} className={'adrow cat' + (a.visible ? '' : ' hidden')} data-c={a.category}>
+            <div>
+              <h3>{a.title}</h3>
+              <div className="meta">
+                <span className="tag">{a.category}</span>
+                <span className={'how m-' + a.mode}>{a.mode === 'link' ? '외부 링크' : '앱 신청서'}</span>
+                {a.mode === 'form' ? <span>신청 <b style={{ color: 'var(--ink)' }}>{a.counts?.total || 0}</b>{a.counts?.new ? ` · 새 ${a.counts.new}` : ''}</span> : <span>링크 클릭 <b style={{ color: 'var(--ink)' }}>{a.clicks || 0}</b></span>}
+                {a.deadline && <span>마감 {a.deadline.slice(5).replace('-', '/')}</span>}
+                {!a.visible && <span style={{ color: 'var(--red)', fontWeight: 700 }}>숨김</span>}
+              </div>
+            </div>
+            <div className="acts">
+              <button className="btn small" onClick={() => act({ action: 'move', id: a.id, dir: 'up' })} disabled={i === 0} aria-label="위로">↑</button>
+              <button className="btn small" onClick={() => act({ action: 'move', id: a.id, dir: 'down' })} disabled={i === ads.length - 1} aria-label="아래로">↓</button>
+              <button className="btn small" onClick={() => act({ action: 'toggle', id: a.id }, a.visible ? '숨겼습니다' : '공개했습니다')}>{a.visible ? '숨기기' : '공개'}</button>
+              <button className="btn small" onClick={() => setShare(a)}>공유</button>
+              <button className="btn small primary" onClick={() => setEdit(a)}>수정</button>
+              <button className="btn small danger" onClick={() => remove(a)}>삭제</button>
+            </div>
+          </div>
+        ))}
+      </div>
+      {share && <ShareModal ad={share} appUrl={appUrl} say={say} onClose={() => setShare(null)} reload={reload} />}
+    </>
+  );
+}
+
+function CopyLine({ value, say }) {
+  return (
+    <div className="copyline">
+      <input readOnly value={value} onFocus={(e) => e.target.select()} aria-label="주소" />
+      <button className="btn small" onClick={async () => { try { await navigator.clipboard.writeText(value); say('복사했습니다'); } catch { say('주소를 길게 눌러 복사해 주세요'); } }}>복사</button>
+    </div>
+  );
+}
+
+function ShareModal({ ad, appUrl, say, onClose, reload }) {
+  const [key, setKey] = useState(ad.managerKey || '');
+  async function make(revoke) {
+    if (key && !confirm(revoke ? '담당자 링크를 막을까요?' : '새 링크를 만들면 예전 링크는 더 이상 열리지 않습니다. 계속할까요?')) return;
+    try { const j = await api('/api/admin/ads', { action: 'managerKey', id: ad.id, revoke }); setKey(j.managerKey); say(revoke ? '링크를 막았습니다' : '담당자 링크를 만들었습니다'); reload(); } catch (e) { say(e.message); }
+  }
+  return (
+    <div className="modal-bg" onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="modal" role="dialog" aria-modal="true" aria-label="공유">
+        <h2 style={{ fontSize: 20, fontWeight: 800 }}>{ad.title}</h2>
+        <div style={{ display: 'grid', gap: 8 }}>
+          <b>성도님께 보낼 신청 주소</b>
+          <CopyLine value={`${appUrl}/r/${ad.id}`} say={say} />
+          <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+            <img className="qr" src={`/api/admin/qr?ad=${ad.id}`} alt="이 광고 QR 코드" />
+            <a className="link" style={{ fontSize: 14 }} href={`/api/admin/qr?ad=${ad.id}&download=1`}>QR 내려받기</a>
+          </div>
+        </div>
+        {ad.mode === 'form' && (
+          <div style={{ display: 'grid', gap: 8, borderTop: '1px solid var(--line)', paddingTop: 14 }}>
+            <b>부서 담당자 링크</b>
+            <p className="muted" style={{ fontSize: 14 }}>담당자는 로그인 없이 <b>이 모집의 신청만</b> 보고, 연락 상태를 바꾸고, 엑셀로 받을 수 있어요. 다른 모집은 보이지 않습니다.</p>
+            {key ? <><CopyLine value={`${appUrl}/m/${ad.id}?k=${key}`} say={say} />
+              <div style={{ display: 'flex', gap: 8 }}><button className="btn small" onClick={() => make(false)}>새 링크로 바꾸기</button><button className="btn small danger" onClick={() => make(true)}>링크 막기</button></div></>
+              : <button className="btn small primary" onClick={() => make(false)}>담당자 링크 만들기</button>}
+          </div>
+        )}
+        <button className="btn" onClick={onClose}>닫기</button>
+      </div>
+    </div>
+  );
+}
+
+function Editor({ initial, onClose, onSaved, mail }) {
+  const [a, setA] = useState(() => ({ ...blankAd(), ...initial, fields: (initial.fields || []).map((f) => ({ ...f, options: (f.options || []).join(', ') })) }));
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const set = (k, v) => setA((p) => ({ ...p, [k]: v }));
+  const setF = (i, k, v) => setA((p) => ({ ...p, fields: p.fields.map((f, j) => (j === i ? { ...f, [k]: v } : f)) }));
+
+  async function save() {
+    if (!a.title.trim()) return setErr('제목을 적어 주세요.');
+    if (a.mode === 'link' && !a.link.trim()) return setErr('신청 링크를 넣어 주세요.');
+    setBusy(true); setErr('');
+    try {
+      const { counts, managerKey, ...ad } = a;
+      await api('/api/admin/ads', { action: 'save', ad: { ...ad, fields: a.fields.map((f) => ({ ...f, options: String(f.options || '').split(',') })) } });
+      onSaved();
+    } catch (e) { setErr(e.message); } finally { setBusy(false); }
+  }
+
+  return (
+    <section className="editor" aria-label="광고 편집">
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <h2 style={{ fontSize: 20, fontWeight: 800, flex: 1 }}>{initial.id ? '광고 수정' : '새 광고'}</h2>
+        <button className="btn small ghost" onClick={onClose}>닫기</button>
+      </div>
+      <label className="field">제목<input value={a.title} onChange={(e) => set('title', e.target.value)} maxLength={80} placeholder="예: 사랑부(장애우) 봉사자 모집" /></label>
+      <div className="row2">
+        <label className="field">부서<select value={a.category} onChange={(e) => set('category', e.target.value)}>{CATEGORIES.map((c) => <option key={c}>{c}</option>)}</select></label>
+        <label className="field">마감일<span className="opt">(지나면 자동 마감)</span><input type="date" value={a.deadline} onChange={(e) => set('deadline', e.target.value)} /></label>
+      </div>
+      <label className="field">한두 줄 소개<input value={a.summary} onChange={(e) => set('summary', e.target.value)} maxLength={200} /></label>
+      <label className="field">안내 (일시·장소·대상)<textarea value={a.details} onChange={(e) => set('details', e.target.value)} maxLength={2000} /></label>
+      <label className="field">문의처<input value={a.contact} onChange={(e) => set('contact', e.target.value)} maxLength={300} placeholder="이름 (714) 000-0000" /></label>
+
+      <div style={{ display: 'grid', gap: 10 }}>
+        <b style={{ fontSize: 14 }}>신청 받는 방법</b>
+        <div className="seg" role="group">
+          <button type="button" aria-pressed={a.mode === 'form'} onClick={() => set('mode', 'form')}>앱에서 바로 받기</button>
+          <button type="button" aria-pressed={a.mode === 'link'} onClick={() => set('mode', 'link')}>부서 링크로 보내기</button>
+        </div>
+        {a.mode === 'link' ? (
+          <label className="field">신청 링크<input value={a.link} onChange={(e) => set('link', e.target.value)} placeholder="https://…" inputMode="url" /><span className="help">게시판에서 누르면 이 주소로 넘어가고, 몇 번 눌렸는지 세어 둡니다.</span></label>
+        ) : (
+          <>
+            <p className="muted" style={{ fontSize: 14 }}>이름·연락처·이메일(선택)·남길 말은 기본으로 들어갑니다. 더 물어볼 것만 추가하세요.</p>
+            <label className="check"><input type="checkbox" checked={a.askCommunity} onChange={(e) => set('askCommunity', e.target.checked)} /><span>소속(부서·순) 물어보기</span></label>
+            {a.fields.map((f, i) => (
+              <div className="fieldrow" key={i}>
+                <input value={f.label} onChange={(e) => setF(i, 'label', e.target.value)} placeholder="질문 (예: 악기)" aria-label="질문" />
+                <select value={f.kind} onChange={(e) => setF(i, 'kind', e.target.value)} aria-label="답 형식">{Object.entries(FIELD_KINDS).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select>
+                <label className="check" style={{ fontSize: 13 }}><input type="checkbox" checked={!!f.required} onChange={(e) => setF(i, 'required', e.target.checked)} />필수</label>
+                <button type="button" className="link" style={{ color: 'var(--red)', fontSize: 13 }} onClick={() => set('fields', a.fields.filter((_, j) => j !== i))}>빼기</button>
+                {(f.kind === 'choice' || f.kind === 'multi') && <input className="opts-in" value={f.options} onChange={(e) => setF(i, 'options', e.target.value)} placeholder="보기를 쉼표로: 소프라노, 알토, 테너, 베이스" aria-label="보기" />}
+              </div>
+            ))}
+            {a.fields.length < 12 && <button type="button" className="btn small" style={{ justifySelf: 'start' }} onClick={() => set('fields', [...a.fields, { label: '', kind: 'text', options: '', required: false }])}>+ 질문 추가</button>}
+            <label className="field">새 신청 알림 받을 이메일<span className="opt">(선택, 쉼표로 여러 명)</span>
+              <input value={a.notify} onChange={(e) => set('notify', e.target.value)} placeholder="leader@example.com" inputMode="email" />
+              {!mail && <span className="help">메일 설정(GMAIL_USER·GMAIL_APP_PASSWORD)이 없어서 지금은 알림이 가지 않아요.</span>}
+            </label>
+          </>
+        )}
+      </div>
+      <label className="check"><input type="checkbox" checked={a.visible} onChange={(e) => set('visible', e.target.checked)} /><span>게시판에 공개</span></label>
+      {err && <p className="note bad" role="alert">{err}</p>}
+      <div style={{ display: 'flex', gap: 8 }}>
+        <button className="btn primary" onClick={save} disabled={busy}>{busy ? '저장 중…' : '저장'}</button>
+        <button className="btn" onClick={onClose}>취소</button>
+      </div>
+    </section>
+  );
+}
+
+/* ================= 주보에서 가져오기 */
+const norm = (t) => String(t || '').replace(/[\s()·\-—]/g, '').replace(/모집|신청|함께해요/g, '');
+function ImportTab({ ai, existing, reload, say, goAds }) {
+  const has = (t) => existing.some((e) => norm(e.title) === norm(t) || (norm(t).length > 3 && (norm(e.title).includes(norm(t)) || norm(t).includes(norm(e.title)))));
+  const [text, setText] = useState('');
+  const [found, setFound] = useState(null);
+  const [pick, setPick] = useState({});
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+
+  async function read() {
+    setBusy(true); setErr(''); setFound(null);
+    try {
+      const j = await api('/api/admin/import', { text });
+      setFound(j.ads); setPick(Object.fromEntries(j.ads.map((a, i) => [i, !has(a.title)])));
+      if (!j.ads.length) setErr('모집 광고를 찾지 못했습니다.');
+    } catch (e) { setErr(e.message); } finally { setBusy(false); }
+  }
+  async function add() {
+    const list = found.filter((_, i) => pick[i]);
+    if (!list.length) return;
+    setBusy(true);
+    try { await api('/api/admin/ads', { action: 'saveMany', ads: list }); say(`${list.length}개를 추가했습니다`); await reload(); goAds(); }
+    catch (e) { setErr(e.message); } finally { setBusy(false); }
+  }
+
+  if (!ai) {
+    return <p className="note warn">주보 자동 읽기를 쓰려면 Vercel 환경 변수에 <b>ANTHROPIC_API_KEY</b>를 넣어 주세요. 없어도 <b>광고 관리 → + 새 광고</b>로 직접 추가할 수 있어요.</p>;
+  }
+  return (
+    <div style={{ display: 'grid', gap: 14 }}>
+      <p className="muted">이번 주 주보 광고 글을 통째로 붙여 넣으면, 모집 광고만 골라 정리해 드립니다. 신청 링크가 있으면 <b>링크로 보내기</b>, 없으면 <b>앱 신청서</b>로 만들어요. 확인하고 고른 것만 추가됩니다.</p>
+      <label className="field">주보 광고 글
+        <textarea value={text} onChange={(e) => setText(e.target.value)} style={{ minHeight: 220 }} placeholder="광고 글을 여기에 붙여 넣으세요" />
+      </label>
+      <button className="btn primary" style={{ justifySelf: 'start' }} disabled={busy || text.trim().length < 20} onClick={read}>{busy && !found ? '읽는 중… (30초쯤)' : '모집 광고 찾기'}</button>
+      {err && <p className="note bad" role="alert">{err}</p>}
+      {found?.length > 0 && (
+        <>
+          <b>찾은 모집 {found.length}개 — 추가할 것을 고르세요</b>
+          {found.map((a, i) => (
+            <label key={i} className="import-card cat" data-c={a.category}>
+              <input type="checkbox" checked={!!pick[i]} onChange={(e) => setPick((p) => ({ ...p, [i]: e.target.checked }))} />
+              <div style={{ display: 'grid', gap: 4 }}>
+                <div className="meta" style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}><span className="tag">{a.category}</span><span className={'how m-' + a.mode}>{a.mode === 'link' ? '외부 링크' : '앱 신청서'}</span>{a.deadline && <span className="muted" style={{ fontSize: 13 }}>마감 {a.deadline}</span>}{has(a.title) && <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--red)' }}>이미 비슷한 광고가 있어요</span>}</div>
+                <b>{a.title}</b>
+                {a.summary && <span style={{ fontSize: 14 }}>{a.summary}</span>}
+                {a.details && <span className="muted" style={{ fontSize: 13, whiteSpace: 'pre-line' }}>{a.details}</span>}
+                {a.contact && <span className="muted" style={{ fontSize: 13 }}>문의 · {a.contact}</span>}
+                {a.link && <span className="muted" style={{ fontSize: 13, fontFamily: 'var(--latin)' }}>{a.link}</span>}
+                {a.fields?.length > 0 && <span className="muted" style={{ fontSize: 13 }}>추가 질문: {a.fields.map((f) => f.label).join(' · ')}</span>}
+              </div>
+            </label>
+          ))}
+          <button className="btn primary" style={{ justifySelf: 'start' }} onClick={add} disabled={busy}>선택한 {Object.values(pick).filter(Boolean).length}개 추가</button>
+          <p className="muted" style={{ fontSize: 13 }}>같은 광고가 이미 있으면 두 번 추가되지 않도록 확인해 주세요. 추가한 뒤 광고 관리에서 고칠 수 있어요.</p>
+        </>
+      )}
+    </div>
+  );
+}
