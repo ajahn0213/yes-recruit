@@ -15,6 +15,7 @@ const TOOL = {
         items: {
           type: 'object',
           properties: {
+            match_id: { type: 'string', description: '<current> 목록에 같은 모집(제목이 조금 달라도 같은 사역·같은 모집)이 있으면 그 id, 없으면 빈 문자열' },
             title: { type: 'string', description: '짧은 제목 (예: "사랑부(장애우) 봉사자 모집")' },
             category: { type: 'string', enum: CATEGORIES },
             summary: { type: 'string', description: '한두 문장 소개' },
@@ -35,7 +36,7 @@ const TOOL = {
   },
 };
 
-export async function parseBulletin(text, today) {
+export async function parseBulletin(text, today, current = []) {
   if (!aiReady()) throw new Error('ANTHROPIC_API_KEY가 없어 자동으로 읽을 수 없습니다.');
   const base = (process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com').replace(/\/$/, '');
   const body = {
@@ -45,8 +46,10 @@ export async function parseBulletin(text, today) {
 - 주보에 적힌 사실만 옮기고, 없는 날짜·장소·연락처를 지어내지 마세요.
 - 신청 링크(http, www, tinyurl 등)가 있으면 link에 넣고 fields는 비웁니다.
 - 연도가 없는 날짜는 오늘 이후 가장 가까운 날짜로 YYYY-MM-DD를 정합니다.
+- 같은 모집을 두 번 넣지 마세요. 한 광고 안에 여러 모집(예: 찬양대와 오케스트라)이 있으면 따로 나눕니다.
+- <current>는 앱에 이미 있는 광고입니다. 같은 모집이면 match_id에 그 id를 넣고, 제목·내용은 주보 글 기준으로 적습니다.
 - 반드시 submit_ads 도구로 답하세요.`,
-    messages: [{ role: 'user', content: `다음 주보 글에서 모집 광고를 뽑아 주세요.\n\n<bulletin>\n${String(text).slice(0, 30000)}\n</bulletin>` }],
+    messages: [{ role: 'user', content: `다음 주보 글에서 모집 광고를 뽑아 주세요.\n\n<current>\n${current.map((a) => `${a.id}\t${a.title}`).join('\n') || '(없음)'}\n</current>\n\n<bulletin>\n${String(text).slice(0, 30000)}\n</bulletin>` }],
     tools: [TOOL], tool_choice: { type: 'tool', name: 'submit_ads' },
   };
   let last;

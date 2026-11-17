@@ -51,6 +51,10 @@ export function normalizeAd(a, order = 0) {
     managerKeyHash: typeof a?.managerKeyHash === 'string' ? a.managerKeyHash : '',
     managerKeyEnc: typeof a?.managerKeyEnc === 'string' ? a.managerKeyEnc : '',
     clicks: Number(a?.clicks) || 0,
+    // 주보 자동 연동: bulletin = 주보에서 온 광고, manual = 직접 만든 광고
+    source: a?.source === 'bulletin' || (!a?.source && SEED_IDS.has(a?.id)) ? 'bulletin' : 'manual',
+    locked: !!a?.locked,          // true면 주보 연동이 건드리지 않음
+    autoHidden: !!a?.autoHidden,  // 주보에서 빠져서 자동으로 숨긴 광고
   };
 }
 
@@ -137,3 +141,5 @@ export const BULLETIN_SEED = [
     fields: [{ id: 'serve', label: '함께할 섬김', kind: 'multi', options: ['12/3 연합 찬양인도', '12/5 특송', '12/12 식사 봉사'], required: true }],
   },
 ];
+
+export const SEED_IDS = new Set(BULLETIN_SEED.map((a) => a.id));

@@ -16,6 +16,8 @@ const K = {
   lock: (n) => P + 'lock:' + n,
   rl: (k) => P + 'rl:' + k,
   seeded: P + 'seeded',
+  sync: P + 'sync',
+  syncRun: P + 'sync:running',
 };
 
 function need() { if (!redis) throw new Error('저장소(Upstash Redis)가 연결되지 않았습니다.'); }
@@ -85,3 +87,9 @@ export async function rateLimit(bucket, who, limit, windowSec) {
   if (n === 1) await redis.expire(k, windowSec + 5);
   return n <= limit;
 }
+
+// ---- 주보 자동 연동 상태
+export async function getSyncState() { need(); return parse(await redis.get(K.sync)) || { hash: '', log: [] }; }
+export async function setSyncState(st) { need(); await redis.set(K.sync, JSON.stringify(st)); }
+export async function claimSyncRun() { need(); return Boolean(await redis.set(K.syncRun, String(Date.now()), { nx: true, ex: 240 })); }
+export async function releaseSyncRun() { if (redis) await redis.del(K.syncRun); }

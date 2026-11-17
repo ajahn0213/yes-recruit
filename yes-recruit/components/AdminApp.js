@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { CATEGORIES, FIELD_KINDS } from '@/lib/ads';
 import Responses from './Responses';
+import { appsScript } from '@/lib/appsScript';
 
 const H = { 'content-type': 'application/json', 'x-yes-recruit': '1' };
 async function api(url, body, method = 'POST') {
@@ -58,12 +59,12 @@ export default function AdminApp({ appUrl: envUrl }) {
         <div className="tabs" role="tablist">
           <button role="tab" aria-selected={tab === 'resp'} onClick={() => setTab('resp')}>신청 현황{newCount > 0 && <span className="badge">{newCount}</span>}</button>
           <button role="tab" aria-selected={tab === 'ads'} onClick={() => setTab('ads')}>광고 관리</button>
-          <button role="tab" aria-selected={tab === 'import'} onClick={() => setTab('import')}>주보에서 가져오기</button>
+          <button role="tab" aria-selected={tab === 'import'} onClick={() => setTab('import')}>주보 연동</button>
         </div>
         {!ads ? <p className="muted">불러오는 중…</p>
           : tab === 'resp' ? <Responses ads={formAds} byAd={byAd} onPatch={patch} onDelete={del} csvHref={(ad) => '/api/admin/export' + (ad && ad !== 'all' ? '?ad=' + ad : '')} />
           : tab === 'ads' ? <AdsTab ads={ads} reload={load} say={say} appUrl={appUrl} mail={flags.mail} />
-          : <ImportTab ai={flags.ai} existing={ads} reload={load} say={say} goAds={() => setTab('ads')} />}
+          : <><SyncPanel appUrl={appUrl} reload={load} say={say} /><ImportTab ai={flags.ai} existing={ads} reload={load} say={say} goAds={() => setTab('ads')} /></>}
       </main>
       {toast && <div className="toast" role="status">{toast}</div>}
     </>
@@ -113,7 +114,8 @@ function AdsTab({ ads, reload, say, appUrl, mail }) {
                 <span className={'how m-' + a.mode}>{a.mode === 'link' ? '외부 링크' : '앱 신청서'}</span>
                 {a.mode === 'form' ? <span>신청 <b style={{ color: 'var(--ink)' }}>{a.counts?.total || 0}</b>{a.counts?.new ? ` · 새 ${a.counts.new}` : ''}</span> : <span>링크 클릭 <b style={{ color: 'var(--ink)' }}>{a.clicks || 0}</b></span>}
                 {a.deadline && <span>마감 {a.deadline.slice(5).replace('-', '/')}</span>}
-                {!a.visible && <span style={{ color: 'var(--red)', fontWeight: 700 }}>숨김</span>}
+                {a.source === 'bulletin' && <span className="how" title="주보가 바뀌면 자동으로 고쳐집니다">{a.locked ? '직접 관리' : '주보 연동'}</span>}
+                {!a.visible && <span style={{ color: 'var(--red)', fontWeight: 700 }}>{a.autoHidden ? '주보에서 빠져 숨김' : '숨김'}</span>}
               </div>
             </div>
             <div className="acts">
@@ -237,6 +239,11 @@ function Editor({ initial, onClose, onSaved, mail }) {
         )}
       </div>
       <label className="check"><input type="checkbox" checked={a.visible} onChange={(e) => set('visible', e.target.checked)} /><span>게시판에 공개</span></label>
+      {a.source === 'bulletin' && (
+        <label className="check"><input type="checkbox" checked={!!a.locked} onChange={(e) => set('locked', e.target.checked)} />
+          <span>직접 관리 <span className="muted" style={{ fontSize: 13 }}>— 체크하면 주보가 바뀌어도 이 광고는 자동으로 고치거나 숨기지 않아요. 여기서 고친 문구를 지키고 싶을 때 쓰세요.</span></span></label>
+      )}
+      {a.source === 'bulletin' && !a.locked && initial.id && <p className="note" style={{ fontSize: 13 }}>이 광고는 주보와 연동돼 있어요. 제목·소개·안내·문의·링크·마감일은 다음 주보 반영 때 주보 내용으로 바뀝니다. 추가 질문·알림 메일·담당자 링크는 그대로 남아요.</p>}
       {err && <p className="note bad" role="alert">{err}</p>}
       <div style={{ display: 'flex', gap: 8 }}>
         <button className="btn primary" onClick={save} disabled={busy}>{busy ? '저장 중…' : '저장'}</button>
@@ -277,6 +284,7 @@ function ImportTab({ ai, existing, reload, say, goAds }) {
   }
   return (
     <div style={{ display: 'grid', gap: 14 }}>
+      <h2 style={{ fontSize: 18, fontWeight: 800 }}>직접 붙여 넣어 가져오기</h2>
       <p className="muted">이번 주 주보 광고 글을 통째로 붙여 넣으면, 모집 광고만 골라 정리해 드립니다. 신청 링크가 있으면 <b>링크로 보내기</b>, 없으면 <b>앱 신청서</b>로 만들어요. 확인하고 고른 것만 추가됩니다.</p>
       <label className="field">주보 광고 글
         <textarea value={text} onChange={(e) => setText(e.target.value)} style={{ minHeight: 220 }} placeholder="광고 글을 여기에 붙여 넣으세요" />
@@ -305,5 +313,64 @@ function ImportTab({ ai, existing, reload, say, goAds }) {
         </>
       )}
     </div>
+  );
+}
+
+/* ================= 주보 자동 연동 */
+function SyncPanel({ appUrl, reload, say }) {
+  const [st, setSt] = useState(null);
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const load = useCallback(() => fetch('/api/admin/sync').then((r) => r.json()).then(setSt).catch(() => {}), []);
+  useEffect(() => { load(); }, [load]);
+  const fmt = (iso) => new Intl.DateTimeFormat('ko-KR', { timeZone: 'America/Los_Angeles', month: 'numeric', day: 'numeric', weekday: 'short', hour: 'numeric', minute: '2-digit' }).format(new Date(iso));
+  async function rerun() {
+    setBusy(true);
+    try { const j = await api('/api/admin/sync', {}); say(j.message || '반영했습니다'); await load(); await reload(); } catch (e) { say(e.message); } finally { setBusy(false); }
+  }
+  const code = appsScript(appUrl || 'https://yes-recruit.vercel.app');
+  if (!st) return null;
+  const last = st.log?.[0];
+  return (
+    <section className="editor" style={{ borderWidth: 1.5, borderColor: 'var(--line)', marginBottom: 28 }}>
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+        <h2 style={{ fontSize: 20, fontWeight: 800, flex: 1 }}>Google 문서 주보 자동 반영</h2>
+        {st.at ? <span className="how m-form">연결됨 · 마지막 {fmt(st.at)}</span> : <span className="how">아직 연결 전</span>}
+      </div>
+      <p className="muted" style={{ fontSize: 14 }}>주보 제작 Google 문서의 광고 탭이 바뀌면 1시간 안에 여기에 자동으로 반영됩니다. 새 모집은 추가, 바뀐 모집은 수정, 주보에서 빠진 모집은 숨김(신청 기록은 그대로). 문서 메뉴 <b>YES 모집 앱 → 지금 앱에 반영하기</b>로 바로 보낼 수도 있어요.</p>
+      {!st.hasSecret && <p className="note warn">Vercel 환경 변수에 <b>SYNC_SECRET</b>(아무 긴 문자열)을 넣고 다시 배포해 주세요.</p>}
+      {!st.ai && <p className="note warn">주보를 읽으려면 Vercel 환경 변수에 <b>ANTHROPIC_API_KEY</b>가 필요합니다.</p>}
+      {last && (
+        <div className={'note' + (last.ok ? '' : ' bad')} style={{ display: 'grid', gap: 4 }}>
+          <b>{fmt(last.at)} · {last.message}</b>
+          {last.added?.length > 0 && <span>추가: {last.added.join(', ')}</span>}
+          {(last.updated?.length > 0 || last.shown?.length > 0) && <span>수정: {[...(last.updated || []), ...(last.shown || [])].join(', ')}</span>}
+          {last.hidden?.length > 0 && <span>숨김: {last.hidden.join(', ')}</span>}
+        </div>
+      )}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        {st.hasText && <button className="btn small" onClick={rerun} disabled={busy}>{busy ? '반영 중… (30초쯤)' : '마지막 주보로 다시 반영'}</button>}
+        <button className="btn small" onClick={() => setOpen((o) => !o)}>{open ? '설치 방법 닫기' : '설치 방법 · 스크립트 보기'}</button>
+      </div>
+      {open && (
+        <div style={{ display: 'grid', gap: 10, fontSize: 14 }}>
+          <ol style={{ margin: 0, paddingLeft: 20, display: 'grid', gap: 6 }}>
+            <li>주보 제작 Google 문서를 열고 메뉴 <b>확장 프로그램 → Apps Script</b>를 누릅니다.</li>
+            <li>원래 있던 글을 모두 지우고 아래 스크립트를 붙여 넣은 뒤 <b>저장</b>(💾)합니다.</li>
+            <li>Google 문서로 돌아와 <b>새로고침</b>하면 메뉴에 <b>YES 모집 앱</b>이 생깁니다.</li>
+            <li><b>YES 모집 앱 → 연동 설정하기</b> → 권한 허용(“확인되지 않은 앱” 화면이 나오면 고급 → 이동) → Vercel에 넣은 <b>SYNC_SECRET</b> 값을 붙여 넣습니다.</li>
+            <li><b>YES 모집 앱 → 지금 앱에 반영하기</b>로 첫 반영을 해 봅니다. 1분 뒤 이 화면을 새로고침하세요.</li>
+          </ol>
+          <textarea readOnly value={code} style={{ minHeight: 220, fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 12, padding: 12, border: '1.5px solid var(--line)' }} onFocus={(e) => e.target.select()} />
+          <button className="btn small primary" style={{ justifySelf: 'start' }} onClick={async () => { try { await navigator.clipboard.writeText(code); say('스크립트를 복사했습니다'); } catch { say('글 상자를 눌러 전체 선택 후 복사해 주세요'); } }}>스크립트 복사</button>
+        </div>
+      )}
+      {st.log?.length > 1 && (
+        <details style={{ fontSize: 13 }}>
+          <summary style={{ cursor: 'pointer', fontWeight: 700 }}>지난 기록</summary>
+          <ul style={{ margin: '8px 0 0', paddingLeft: 18 }}>{st.log.slice(1).map((l, i) => <li key={i} className={l.ok ? '' : 'err'}>{fmt(l.at)} · {l.message}</li>)}</ul>
+        </details>
+      )}
+    </section>
   );
 }

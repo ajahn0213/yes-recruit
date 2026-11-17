@@ -37,9 +37,9 @@ export async function POST(req) {
       for (const raw of incoming) {
         const i = raw?.id ? next.findIndex((a) => a.id === raw.id) : -1;
         const old = i >= 0 ? next[i] : null;
-        let ad = normalizeAd({ ...raw, id: old ? old.id : undefined }, next.length);
+        let ad = normalizeAd({ ...raw, id: old ? old.id : undefined, source: old ? old.source : (action === 'saveMany' ? 'bulletin' : 'manual') }, next.length);
         // 바꾸면 안 되는 값은 원래 것으로
-        if (old) ad = { ...ad, createdAt: old.createdAt, clicks: old.clicks, managerKeyHash: old.managerKeyHash, managerKeyEnc: old.managerKeyEnc, order: old.order };
+        if (old) ad = { ...ad, createdAt: old.createdAt, clicks: old.clicks, managerKeyHash: old.managerKeyHash, managerKeyEnc: old.managerKeyEnc, order: old.order, source: old.source, autoHidden: ad.visible === old.visible ? old.autoHidden : false };
         else while (next.some((a) => a.id === ad.id)) ad.id = ad.id + Math.random().toString(36).slice(2, 4);
         if (old) next[i] = ad; else next.unshift(ad);
         savedIds.push(ad.id);
@@ -65,7 +65,7 @@ export async function POST(req) {
   }
 
   if (action === 'toggle') {
-    await updateAds((cur) => cur.map((a) => (a.id === body.id ? { ...a, visible: !a.visible, updatedAt: new Date().toISOString() } : a)));
+    await updateAds((cur) => cur.map((a) => (a.id === body.id ? { ...a, visible: !a.visible, autoHidden: false, updatedAt: new Date().toISOString() } : a)));
     return json({ ok: true });
   }
 
