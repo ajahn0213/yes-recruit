@@ -9,9 +9,9 @@ import crypto from 'crypto';
 import { getAds, updateAds, getSyncState, setSyncState, claimSyncRun, releaseSyncRun } from './store';
 import { normalizeAd, safeLink } from './ads';
 import { parseBulletin } from './importer';
+import { titleSimilarity } from './similar';
 
 export const textHash = (t) => crypto.createHash('sha256').update(String(t).replace(/\s+/g, ' ').trim()).digest('hex');
-const norm = (t) => String(t || '').replace(/[\s()·\-—_.,:!]/g, '').replace(/모집|신청|안내|함께해요|상시/g, '').toLowerCase();
 
 async function addLog(entry, hash, text) {
   const st = await getSyncState();
@@ -41,10 +41,17 @@ export async function runSync(text, today, { force = false } = {}) {
       const pickMatch = (f) => {
         const byId = f.match_id && next.find((a) => a.id === f.match_id && a.source === 'bulletin' && !a.locked && !used.has(a.id));
         if (byId) return byId;
-        return next.find((a) => a.source === 'bulletin' && !a.locked && !used.has(a.id) && norm(a.title) === norm(f.title)) || null;
+        // 제목이 조금 달라도 같은 모집이면 (예: '3부 찬양대' ↔ '3부 Holywave Choir 찬양대')
+        let best = null, score = 0;
+        for (const a of next) {
+          if (a.source !== 'bulletin' || a.locked || used.has(a.id)) continue;
+          const sc = titleSimilarity(a.title, f.title);
+          if (sc > score) { best = a; score = sc; }
+        }
+        return score >= 0.75 ? best : null;
       };
       // 잠근 광고와 같은 모집이면 새로 만들지 않음
-      const isLockedTwin = (f) => next.some((a) => (a.locked || a.source === 'manual') && (a.id === f.match_id || norm(a.title) === norm(f.title)));
+      const isLockedTwin = (f) => next.some((a) => (a.locked || a.source === 'manual') && (a.id === f.match_id || titleSimilarity(a.title, f.title) >= 0.75));
 
       for (const f of found) {
         const link = safeLink(f.link);

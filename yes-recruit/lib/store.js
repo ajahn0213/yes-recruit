@@ -1,7 +1,7 @@
 // 저장소 (Upstash Redis) — 서버 전용. 다른 YES 앱과 같은 데이터베이스를 써도 되도록 키는 'recruit:'로 시작
 import crypto from 'crypto';
 import { Redis } from '@upstash/redis';
-import { normalizeAd, BULLETIN_SEED } from './ads';
+import { normalizeAd, BULLETIN_SEED, SEED_IDS } from './ads';
 import { sha } from './secure';
 
 const url = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
@@ -46,7 +46,9 @@ export async function getAds() {
       await redis.set(K.ads, JSON.stringify(list));
     } else list = [];
   }
-  return list.sort((a, b) => a.order - b.order);
+  // 예전 버전에서 저장된 광고에 없는 값 채우기 (처음 넣은 주보 광고 = 주보에서 온 광고)
+  return list.map((a) => ({ ...a, source: a.source || (SEED_IDS.has(a.id) ? 'bulletin' : 'manual'), locked: !!a.locked, autoHidden: !!a.autoHidden }))
+    .sort((a, b) => a.order - b.order);
 }
 export async function updateAds(fn) {
   return withLock('ads', async () => {

@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { CATEGORIES, FIELD_KINDS } from '@/lib/ads';
 import Responses from './Responses';
 import { appsScript } from '@/lib/appsScript';
+import { findDuplicatePairs } from '@/lib/similar';
 
 const H = { 'content-type': 'application/json', 'x-yes-recruit': '1' };
 async function api(url, body, method = 'POST') {
@@ -96,6 +97,8 @@ function AdsTab({ ads, reload, say, appUrl, mail }) {
           <a className="link" style={{ fontSize: 14 }} href="/api/admin/qr?download=1">QR 내려받기 (SVG)</a>
         </div>
       </div>
+
+      <Duplicates ads={ads} reload={reload} say={say} />
 
       <div className="toolbar">
         <b>광고 {ads.length}개</b><span className="muted" style={{ fontSize: 14 }}>· 공개 {ads.filter((a) => a.visible).length}</span>
@@ -372,5 +375,55 @@ function SyncPanel({ appUrl, reload, say }) {
         </details>
       )}
     </section>
+  );
+}
+
+/* ================= 중복 광고 합치기 */
+function Duplicates({ ads, reload, say }) {
+  const [busy, setBusy] = useState(false);
+  const [keep, setKeep] = useState('');
+  const [drop, setDrop] = useState('');
+  const pairs = findDuplicatePairs(ads);
+  const count = (a) => (a.mode === 'form' ? `신청 ${a.counts?.total || 0}` : `클릭 ${a.clicks || 0}`);
+  const when = (iso) => (iso ? new Date(iso).toLocaleDateString('ko-KR', { month: 'numeric', day: 'numeric' }) : '');
+
+  async function merge(k, d, quiet) {
+    const r = await api('/api/admin/ads', { action: 'merge', keep: k, drop: d });
+    if (!quiet) say(r.moved ? `합쳤습니다 · 신청 ${r.moved}건을 옮겼어요` : '합쳤습니다');
+  }
+  async function run(list) {
+    setBusy(true);
+    try { for (const p of list) await merge(p.keep.id, p.drop.id, list.length > 1); if (list.length > 1) say(`${list.length}쌍을 합쳤습니다`); await reload(); }
+    catch (e) { say(e.message); await reload(); } finally { setBusy(false); }
+  }
+
+  return (
+    <>
+      {pairs.length > 0 && (
+        <section className="note warn" style={{ display: 'grid', gap: 10, marginBottom: 18 }}>
+          <b>같은 모집으로 보이는 광고가 {pairs.length}쌍 있어요</b>
+          <span style={{ fontSize: 13 }}>합치면 <b>먼저 만든 광고</b>의 주소(주보에 실린 링크)·담당자 링크는 그대로 두고, 최신 문구와 두 광고의 신청을 모두 한곳에 모읍니다.</span>
+          {pairs.map((p) => (
+            <div key={p.drop.id} style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', background: '#fff', padding: '10px 12px' }}>
+              <div style={{ flex: 1, minWidth: 220, fontSize: 14, display: 'grid', gap: 2 }}>
+                <span><b>남김</b> {p.keep.title} <span className="muted">({when(p.keep.createdAt)} · {count(p.keep)} · /r/{p.keep.id})</span></span>
+                <span><b>합침</b> {p.drop.title} <span className="muted">({when(p.drop.createdAt)} · {count(p.drop)})</span></span>
+              </div>
+              <button className="btn small primary" disabled={busy} onClick={() => run([p])}>합치기</button>
+            </div>
+          ))}
+          {pairs.length > 1 && <button className="btn small" style={{ justifySelf: 'start' }} disabled={busy} onClick={() => run(pairs)}>{busy ? '합치는 중…' : `${pairs.length}쌍 모두 합치기`}</button>}
+        </section>
+      )}
+      <details style={{ marginBottom: 14, fontSize: 14 }}>
+        <summary style={{ cursor: 'pointer', fontWeight: 700 }}>두 광고 직접 합치기</summary>
+        <div className="toolbar" style={{ marginTop: 10 }}>
+          <select value={keep} onChange={(e) => setKeep(e.target.value)} aria-label="남길 광고"><option value="">남길 광고 (주소 유지)</option>{ads.map((a) => <option key={a.id} value={a.id}>{a.title}</option>)}</select>
+          <span>←</span>
+          <select value={drop} onChange={(e) => setDrop(e.target.value)} aria-label="합칠 광고"><option value="">합쳐서 없앨 광고</option>{ads.filter((a) => a.id !== keep).map((a) => <option key={a.id} value={a.id}>{a.title}</option>)}</select>
+          <button className="btn small primary" disabled={busy || !keep || !drop} onClick={() => { if (confirm('두 광고를 합칠까요? 되돌릴 수 없습니다.')) run([{ keep: { id: keep }, drop: { id: drop } }]); }}>합치기</button>
+        </div>
+      </details>
+    </>
   );
 }

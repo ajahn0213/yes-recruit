@@ -1,5 +1,5 @@
 import { guardAdmin, json, fail } from '@/lib/auth';
-import { getAds, updateAds, getAllResponses, deleteResponsesOf, hasStore } from '@/lib/store';
+import { getAds, updateAds, getAllResponses, deleteResponsesOf, getResponses, updateResponses, hasStore } from '@/lib/store';
 import { normalizeAd } from '@/lib/ads';
 import { randomToken, sha, encrypt, decrypt } from '@/lib/secure';
 import { aiReady } from '@/lib/importer';
@@ -76,6 +76,46 @@ export async function POST(req) {
     await updateAds((cur) => cur.map((a) => (a.id === body.id ? (found = true, { ...a, managerKeyHash: body.revoke ? '' : sha('mgr:' + key), managerKeyEnc: body.revoke ? '' : encrypt(key) }) : a)));
     if (!found) return fail('광고를 찾을 수 없습니다.', 404);
     return json({ ok: true, managerKey: body.revoke ? '' : key });
+  }
+
+  // 같은 모집 두 개를 하나로: keep의 주소·담당자 링크는 남기고, 최신 문구와 신청은 모두 keep으로
+  if (action === 'merge') {
+    const { keep: keepId, drop: dropId } = body;
+    if (!keepId || !dropId || keepId === dropId) return fail('합칠 광고를 확인해 주세요.');
+    const ads = await getAds();
+    const keep = ads.find((a) => a.id === keepId), drop = ads.find((a) => a.id === dropId);
+    if (!keep || !drop) return fail('광고를 찾을 수 없습니다.', 404);
+    // 문구는 더 최근에 고쳐진 쪽 (주보 반영으로 새로 생긴 쪽이 보통 최신)
+    const fresh = String(drop.updatedAt) > String(keep.updatedAt) ? drop : keep;
+    const fields = keep.fields?.length ? keep.fields : drop.fields || [];
+    const fieldIds = new Set(fields.map((f) => f.id));
+
+    const moved = await getResponses(drop.id);
+    if (moved.length) {
+      await updateResponses(keep.id, (list) => {
+        const have = new Set(list.map((r) => r.id));
+        const conv = moved.filter((r) => !have.has(r.id)).map((r) => {
+          // 남는 광고에 없는 질문의 답은 '남긴 말'에 붙여서 잃지 않게
+          const extra = (drop.fields || []).filter((f) => !fieldIds.has(f.id) && r.answers?.[f.id] && String(r.answers[f.id]).length)
+            .map((f) => `[${f.label}] ${Array.isArray(r.answers[f.id]) ? r.answers[f.id].join(', ') : r.answers[f.id]}`);
+          return extra.length ? { ...r, message: [r.message, ...extra].filter(Boolean).join('\n') } : r;
+        });
+        return [...conv, ...list].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      });
+    }
+    await updateAds((cur) => cur.filter((a) => a.id !== drop.id).map((a) => (a.id !== keep.id ? a : {
+      ...a,
+      title: fresh.title, category: fresh.category, summary: fresh.summary, details: fresh.details, contact: fresh.contact,
+      mode: fresh.mode, link: fresh.link, deadline: fresh.deadline, fields,
+      notify: a.notify || drop.notify || '',
+      visible: keep.visible || drop.visible, autoHidden: false,
+      clicks: (a.clicks || 0) + (drop.clicks || 0),
+      source: keep.source === 'bulletin' || drop.source === 'bulletin' ? 'bulletin' : 'manual',
+      locked: keep.locked || drop.locked,
+      updatedAt: new Date().toISOString(),
+    })));
+    await deleteResponsesOf(drop.id);
+    return json({ ok: true, moved: moved.length });
   }
 
   return fail('알 수 없는 요청입니다.');
