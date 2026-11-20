@@ -52,6 +52,13 @@ export async function parseBulletin(text, today, current = []) {
     messages: [{ role: 'user', content: `다음 주보 글에서 모집 광고를 뽑아 주세요.\n\n<current>\n${current.map((a) => `${a.id}\t${a.title}`).join('\n') || '(없음)'}\n</current>\n\n<bulletin>\n${String(text).slice(0, 30000)}\n</bulletin>` }],
     tools: [TOOL], tool_choice: { type: 'tool', name: 'submit_ads' },
   };
+  const input = await callTool(body, base);
+  return Array.isArray(input?.ads) ? input.ads : [];
+}
+
+// Claude에 도구 호출 하나를 보내고 그 입력값을 돌려줌 (모델 이름이 없으면 다음 모델로)
+export async function callTool(body, base = (process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com').replace(/\/$/, '')) {
+  if (!aiReady()) throw new Error('ANTHROPIC_API_KEY가 없습니다.');
   let last;
   for (const model of [...new Set(MODELS())]) {
     const r = await fetch(base + '/v1/messages', {
@@ -60,13 +67,10 @@ export async function parseBulletin(text, today, current = []) {
       body: JSON.stringify({ ...body, model }),
     });
     const j = await r.json().catch(() => ({}));
-    if (r.ok) {
-      const use = (j.content || []).find((c) => c.type === 'tool_use');
-      return Array.isArray(use?.input?.ads) ? use.input.ads : [];
-    }
+    if (r.ok) return (j.content || []).find((c) => c.type === 'tool_use')?.input || null;
     last = j?.error?.message || `HTTP ${r.status}`;
     if (r.status === 401 || r.status === 403) throw new Error('Anthropic API 키를 확인해 주세요.');
     if (!(r.status === 404 || /model/i.test(last))) break;
   }
-  throw new Error('주보를 읽지 못했습니다: ' + last);
+  throw new Error('Claude 응답을 받지 못했습니다: ' + last);
 }

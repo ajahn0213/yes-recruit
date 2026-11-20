@@ -64,7 +64,7 @@ export default function AdminApp({ appUrl: envUrl }) {
         </div>
         {!ads ? <p className="muted">불러오는 중…</p>
           : tab === 'resp' ? <Responses ads={formAds} byAd={byAd} onPatch={patch} onDelete={del} csvHref={(ad) => '/api/admin/export' + (ad && ad !== 'all' ? '?ad=' + ad : '')} />
-          : tab === 'ads' ? <AdsTab ads={ads} reload={load} say={say} appUrl={appUrl} mail={flags.mail} />
+          : tab === 'ads' ? <AdsTab ads={ads} reload={load} say={say} appUrl={appUrl} mail={flags.mail} ai={flags.ai} />
           : <><SyncPanel appUrl={appUrl} reload={load} say={say} /><ImportTab ai={flags.ai} existing={ads} reload={load} say={say} goAds={() => setTab('ads')} /></>}
       </main>
       {toast && <div className="toast" role="status">{toast}</div>}
@@ -73,9 +73,10 @@ export default function AdminApp({ appUrl: envUrl }) {
 }
 
 /* ================= 광고 관리 */
+const splitOpts = (t) => { const x = String(t || ''); return (x.includes('\n') ? x.split('\n') : x.split(',')).map((o) => o.trim()).filter(Boolean); };
 const blankAd = () => ({ title: '', category: '교회 전체', summary: '', details: '', contact: '', mode: 'form', link: '', fields: [], askCommunity: true, deadline: '', visible: true, notify: '' });
 
-function AdsTab({ ads, reload, say, appUrl, mail }) {
+function AdsTab({ ads, reload, say, appUrl, mail, ai }) {
   const [edit, setEdit] = useState(null);
   const [share, setShare] = useState(null);
 
@@ -105,7 +106,7 @@ function AdsTab({ ads, reload, say, appUrl, mail }) {
         <span className="grow" />
         <button className="btn small primary" onClick={() => setEdit(blankAd())}>+ 새 광고</button>
       </div>
-      {edit && <Editor initial={edit} mail={mail} onClose={() => setEdit(null)} onSaved={async () => { setEdit(null); say('저장했습니다'); await reload(); }} />}
+      {edit && <Editor initial={edit} mail={mail} ai={ai} onClose={() => setEdit(null)} onSaved={async () => { setEdit(null); say('저장했습니다'); await reload(); }} />}
 
       <div className="adlist">
         {ads.map((a, i) => (
@@ -180,12 +181,34 @@ function ShareModal({ ad, appUrl, say, onClose, reload }) {
   );
 }
 
-function Editor({ initial, onClose, onSaved, mail }) {
-  const [a, setA] = useState(() => ({ ...blankAd(), ...initial, fields: (initial.fields || []).map((f) => ({ ...f, options: (f.options || []).join(', ') })) }));
+function Editor({ initial, onClose, onSaved, mail, ai }) {
+  const [a, setA] = useState(() => ({ ...blankAd(), ...initial, fields: (initial.fields || []).map((f) => ({ ...f, options: (f.options || []).join('\n') })) }));
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const set = (k, v) => setA((p) => ({ ...p, [k]: v }));
   const setF = (i, k, v) => setA((p) => ({ ...p, fields: p.fields.map((f, j) => (j === i ? { ...f, [k]: v } : f)) }));
+  const [designing, setDesigning] = useState(false);
+  const [why, setWhy] = useState('');
+
+  // 광고 내용을 읽고 이 모집에 맞는 질문을 만들어 채우기 (저장은 직접)
+  async function design() {
+    if (`${a.title} ${a.summary} ${a.details}`.trim().length < 8) return setErr('제목과 광고 글(소개·안내)을 먼저 적어 주세요.');
+    if (a.fields.length && !confirm('지금 있는 추가 질문을 새로 만든 질문으로 바꿀까요?')) return;
+    setDesigning(true); setErr(''); setWhy('');
+    try {
+      const j = await api('/api/admin/design', { ad: { title: a.title, category: a.category, summary: a.summary, details: a.details, contact: a.contact } });
+      setA((p) => ({
+        ...p,
+        mode: 'form',
+        fields: j.fields.map((f) => ({ ...f, options: (f.options || []).join('\n') })),
+        askCommunity: j.askCommunity,
+        summary: p.summary.trim() ? p.summary : j.summary,
+        details: p.details.trim() ? p.details : j.details,
+        category: !initial.id && p.category === '교회 전체' && j.category ? j.category : p.category,
+      }));
+      setWhy(j.why || '질문을 만들었어요.');
+    } catch (e) { setErr(e.message); } finally { setDesigning(false); }
+  }
 
   async function save() {
     if (!a.title.trim()) return setErr('제목을 적어 주세요.');
@@ -193,7 +216,7 @@ function Editor({ initial, onClose, onSaved, mail }) {
     setBusy(true); setErr('');
     try {
       const { counts, managerKey, ...ad } = a;
-      await api('/api/admin/ads', { action: 'save', ad: { ...ad, fields: a.fields.map((f) => ({ ...f, options: String(f.options || '').split(',') })) } });
+      await api('/api/admin/ads', { action: 'save', ad: { ...ad, fields: a.fields.map((f) => ({ ...f, options: splitOpts(f.options) })) } });
       onSaved();
     } catch (e) { setErr(e.message); } finally { setBusy(false); }
   }
@@ -224,6 +247,13 @@ function Editor({ initial, onClose, onSaved, mail }) {
         ) : (
           <>
             <p className="muted" style={{ fontSize: 14 }}>이름·연락처·이메일(선택)·남길 말은 기본으로 들어갑니다. 더 물어볼 것만 추가하세요.</p>
+            {ai && (
+              <div style={{ display: 'grid', gap: 8, padding: 14, background: 'var(--tint)' }}>
+                <button type="button" className="btn small primary" style={{ justifySelf: 'start' }} onClick={design} disabled={designing}>{designing ? '광고를 읽고 질문 만드는 중… (20초쯤)' : '✨ 광고에 맞는 질문 알아서 만들기'}</button>
+                <span className="muted" style={{ fontSize: 13 }}>제목과 광고 글을 읽고, 담당자가 모임을 꾸리는 데 필요한 질문을 만들어 아래에 채웁니다. 고치거나 빼고 저장하세요.</span>
+                {why && <p className="note" style={{ fontSize: 13 }}>{why}</p>}
+              </div>
+            )}
             <label className="check"><input type="checkbox" checked={a.askCommunity} onChange={(e) => set('askCommunity', e.target.checked)} /><span>소속(부서·순) 물어보기</span></label>
             {a.fields.map((f, i) => (
               <div className="fieldrow" key={i}>
@@ -231,7 +261,8 @@ function Editor({ initial, onClose, onSaved, mail }) {
                 <select value={f.kind} onChange={(e) => setF(i, 'kind', e.target.value)} aria-label="답 형식">{Object.entries(FIELD_KINDS).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select>
                 <label className="check" style={{ fontSize: 13 }}><input type="checkbox" checked={!!f.required} onChange={(e) => setF(i, 'required', e.target.checked)} />필수</label>
                 <button type="button" className="link" style={{ color: 'var(--red)', fontSize: 13 }} onClick={() => set('fields', a.fields.filter((_, j) => j !== i))}>빼기</button>
-                {(f.kind === 'choice' || f.kind === 'multi') && <input className="opts-in" value={f.options} onChange={(e) => setF(i, 'options', e.target.value)} placeholder="보기를 쉼표로: 소프라노, 알토, 테너, 베이스" aria-label="보기" />}
+                {(f.kind === 'choice' || f.kind === 'multi') && <textarea className="opts-in" rows={Math.max(3, splitOpts(f.options).length + 1)} value={f.options} onChange={(e) => setF(i, 'options', e.target.value)} placeholder={'보기를 한 줄에 하나씩\n소프라노\n알토\n테너'} aria-label="보기 (한 줄에 하나)" style={{ minHeight: 0, padding: '8px 10px', fontSize: 14, border: '1.5px solid #c9ccc8', width: '100%', resize: 'vertical' }} />}
+                <input className="opts-in" value={f.help || ''} onChange={(e) => setF(i, 'help', e.target.value)} placeholder="도움말 (선택) — 왜 묻는지 한 줄" aria-label="도움말" maxLength={120} />
               </div>
             ))}
             {a.fields.length < 12 && <button type="button" className="btn small" style={{ justifySelf: 'start' }} onClick={() => set('fields', [...a.fields, { label: '', kind: 'text', options: '', required: false }])}>+ 질문 추가</button>}
