@@ -41,6 +41,10 @@ export async function POST(req) {
         // 바꾸면 안 되는 값은 원래 것으로
         if (old) ad = { ...ad, createdAt: old.createdAt, clicks: old.clicks, managerKeyHash: old.managerKeyHash, managerKeyEnc: old.managerKeyEnc, order: old.order, source: old.source, autoHidden: ad.visible === old.visible ? old.autoHidden : false };
         else while (next.some((a) => a.id === ad.id)) ad.id = ad.id + Math.random().toString(36).slice(2, 4);
+        if (ad.mode === 'form' && ad.notify && !ad.managerKeyHash) {
+          const k = randomToken(18);
+          ad = { ...ad, managerKeyHash: sha('mgr:' + k), managerKeyEnc: encrypt(k) };
+        }
         if (old) next[i] = ad; else next.unshift(ad);
         savedIds.push(ad.id);
       }

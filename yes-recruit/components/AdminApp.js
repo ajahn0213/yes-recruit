@@ -117,6 +117,7 @@ function AdsTab({ ads, reload, say, appUrl, mail }) {
                 <span className={'how m-' + a.mode}>{a.mode === 'link' ? '외부 링크' : '앱 신청서'}</span>
                 {a.mode === 'form' ? <span>신청 <b style={{ color: 'var(--ink)' }}>{a.counts?.total || 0}</b>{a.counts?.new ? ` · 새 ${a.counts.new}` : ''}</span> : <span>링크 클릭 <b style={{ color: 'var(--ink)' }}>{a.clicks || 0}</b></span>}
                 {a.deadline && <span>마감 {a.deadline.slice(5).replace('-', '/')}</span>}
+                {a.mode === 'form' && a.notify && <span title={a.notify}>✉ 책임자 {a.notify.split(/[,;\s]+/).filter(Boolean).length}명</span>}
                 {a.source === 'bulletin' && <span className="how" title="주보가 바뀌면 자동으로 고쳐집니다">{a.locked ? '직접 관리' : '주보 연동'}</span>}
                 {!a.visible && <span style={{ color: 'var(--red)', fontWeight: 700 }}>{a.autoHidden ? '주보에서 빠져 숨김' : '숨김'}</span>}
               </div>
@@ -234,9 +235,10 @@ function Editor({ initial, onClose, onSaved, mail }) {
               </div>
             ))}
             {a.fields.length < 12 && <button type="button" className="btn small" style={{ justifySelf: 'start' }} onClick={() => set('fields', [...a.fields, { label: '', kind: 'text', options: '', required: false }])}>+ 질문 추가</button>}
-            <label className="field">새 신청 알림 받을 이메일<span className="opt">(선택, 쉼표로 여러 명)</span>
+            <label className="field">모집 책임자 이메일<span className="opt">(선택, 쉼표로 여러 명)</span>
               <input value={a.notify} onChange={(e) => set('notify', e.target.value)} placeholder="leader@example.com" inputMode="email" />
-              {!mail && <span className="help">메일 설정(GMAIL_USER·GMAIL_APP_PASSWORD)이 없어서 지금은 알림이 가지 않아요.</span>}
+              <span className="help">새 신청이 들어오면 관리자와 함께 이 분들께도 같은 신청 내용 메일이 갑니다. 책임자 메일에는 이 모집 신청만 보는 담당자 링크가 들어가요(비밀번호 없이 열림).</span>
+              {!mail && <span className="help" style={{ color: 'var(--red)' }}>메일 설정(GMAIL_USER·GMAIL_APP_PASSWORD)이 없어서 지금은 알림이 가지 않아요.</span>}
             </label>
           </>
         )}

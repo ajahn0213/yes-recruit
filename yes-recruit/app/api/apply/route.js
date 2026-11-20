@@ -3,7 +3,7 @@ import { isOpen } from '@/lib/ads';
 import { checkApplication } from '@/lib/validate';
 import { notifyNew } from '@/lib/mail';
 import { clientIp, json, fail, sameOrigin, todayLA } from '@/lib/auth';
-import { refCode, randomToken } from '@/lib/secure';
+import { refCode, randomToken, decrypt } from '@/lib/secure';
 
 export const dynamic = 'force-dynamic';
 
@@ -37,7 +37,7 @@ export async function POST(req) {
 
   if (!dup) {
     const appUrl = (process.env.APP_URL || new URL(req.url).origin).replace(/\/$/, '');
-    try { await notifyNew(ad, rec, appUrl); } catch (e) { console.error('[mail]', e.message); }
+    try { await notifyNew(ad, rec, appUrl, ad.managerKeyEnc ? decrypt(ad.managerKeyEnc) || '' : ''); } catch (e) { console.error('[mail]', e.message); }
   }
   return json({ ok: true, ref: rec.ref });
 }
